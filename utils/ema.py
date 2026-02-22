@@ -21,8 +21,6 @@ class EMA(object):
                 param.data = self.shadow[name].data.clone()
 
     def ema_copy(self, module):
-        # Jittor版本的ema_copy实现
-        # 注意：这里假设module有state_dict方法
         module_copy = type(module)()
         module_copy.load_state_dict(module.state_dict())
         self.ema(module_copy)
