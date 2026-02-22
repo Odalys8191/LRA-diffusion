@@ -1,20 +1,19 @@
 import os.path
-import torch.nn as nn
-import torch.utils.data as data
+import jittor.nn as nn
+import jittor.dataset as data
 from tqdm import tqdm
 from utils.ema import EMA
 import numpy as np
 import random
 from utils.clip_wrapper import clip_img_wrap
 from utils.food_data_utils import Food101N, gen_train_list, gen_test_list
-import torch
-import torch.optim as optim
+import jittor
+import jittor.optim as optim
 from utils.learning import *
 from model_diffusion import Diffusion
 from utils.knn_utils import knn_labels, knn, prepare_knn
 import argparse
-torch.manual_seed(123)
-torch.cuda.manual_seed(123)
+jittor.manual_seed(123)
 np.random.seed(123)
 random.seed(123)
 
@@ -27,7 +26,7 @@ def train(diffusion_model, train_loader, test_loader, model_save_dir, n_epochs=1
     clip_train_embed = np.load(os.path.join(data_dir, 'fp_embed_train_food.npy'))
     neighbours = np.load(os.path.join(data_dir, 'fp_knn_food.npy'))
 
-    optimizer = optim.Adam(diffusion_model.model.parameters(), lr=0.0001, weight_decay=0.0, betas=(0.9, 0.999), amsgrad=False, eps=1e-08)
+    optimizer = optim.Adam(diffusion_model.model.parameters(), lr=0.0001, weight_decay=0.0, betas=(0.9, 0.999), eps=1e-08)
     diffusion_loss = nn.MSELoss(reduction='none')
 
     ema_helper = EMA(mu=0.9999)
@@ -41,35 +40,35 @@ def train(diffusion_model, train_loader, test_loader, model_save_dir, n_epochs=1
         with tqdm(enumerate(train_loader), total=len(train_loader), desc=f'train diffusion epoch {epoch}', ncols=120) as pbar:
             for i, (x_batch, _, data_indices) in pbar:
 
-                fp_embd = torch.tensor(clip_train_embed[data_indices, :]).to(torch.float32).to(device)
+                fp_embd = jittor.array(clip_train_embed[data_indices, :]).float32()
                 y_labels_batch, sample_weight = knn_labels(neighbours, data_indices, k=knn, n_class=101)
 
-                y_one_hot_batch, y_logits_batch = cast_label_to_one_hot_and_prototype(y_labels_batch.to(torch.int64),
+                y_one_hot_batch, y_logits_batch = cast_label_to_one_hot_and_prototype(y_labels_batch.int64(),
                                                                                       n_class=n_class)
-                y_0_batch = y_one_hot_batch.to(device)
+                y_0_batch = y_one_hot_batch
 
                 # adjust_learning_rate
                 adjust_learning_rate(optimizer, i / len(train_loader) + epoch, warmup_epochs=10, n_epochs=200, lr_input=0.001)
-                n = x_batch.size(0)
+                n = x_batch.shape[0]
 
                 # antithetic sampling
-                t = torch.randint(low=0, high=diffusion_model.num_timesteps, size=(n // 2 + 1,)).to(device)
-                t = torch.cat([t, diffusion_model.num_timesteps - 1 - t], dim=0)[:n]
+                t = jittor.randint(low=0, high=diffusion_model.num_timesteps, shape=(n // 2 + 1,))
+                t = jittor.concat([t, diffusion_model.num_timesteps - 1 - t], dim=0)[:n]
 
                 # train with and without prior
-                output, e = diffusion_model.forward_t(y_0_batch, x_batch.to(device), t, fp_embd)
+                output, e = diffusion_model.forward_t(y_0_batch, x_batch, t, fp_embd)
 
                 # compute loss
                 mse_loss = diffusion_loss(e, output)
-                weighted_mse_loss = torch.matmul(sample_weight.to(device), mse_loss)
-                loss = torch.mean(weighted_mse_loss)
+                weighted_mse_loss = jittor.matmul(sample_weight, mse_loss)
+                loss = weighted_mse_loss.mean()
 
                 pbar.set_postfix({'loss': loss.item()})
 
                 # optimize diffusion model that predicts eps_theta
                 optimizer.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(diffusion_model.model.parameters(), 1.0)
+                nn.utils.clip_grad_norm_(diffusion_model.model.parameters(), 1.0)
                 optimizer.step()
                 ema_helper.update(diffusion_model.model)
 
@@ -83,27 +82,26 @@ def train(diffusion_model, train_loader, test_loader, model_save_dir, n_epochs=1
             else:
                 states = [diffusion_model.model.state_dict(),
                           diffusion_model.diffusion_encoder.state_dict()]
-            torch.save(states, model_save_dir)
+            jittor.save(states, model_save_dir)
             print("Model saved, update best accuracy at Epoch {}.".format(epoch))
             max_accuracy = max(max_accuracy, acc_test)
 
 
 def test(diffusion_model, test_loader, test_embed):
 
-    if not torch.is_tensor(test_embed):
-        test_embed = torch.tensor(test_embed).to(torch.float32)
+    if not isinstance(test_embed, jittor.Var):
+        test_embed = jittor.array(test_embed).float32()
 
-    with torch.no_grad():
+    with jittor.no_grad():
         diffusion_model.model.eval()
         diffusion_model.fp_encoder.eval()
         correct_cnt = 0.
         for test_batch_idx, data_batch in tqdm(enumerate(test_loader), total=len(test_loader), desc=f'evaluating diff', ncols=100):
             [images, target, indicies] = data_batch[:3]
-            target = target.to(device)
 
-            fp_embed = test_embed[indicies, :].to(device)
-            label_t_0 = diffusion_model.reverse_ddim(images, stochastic=False, fp_x=fp_embed).detach().cpu()
-            correct = cnt_agree(label_t_0.detach().cpu(), target.cpu())[0].item()
+            fp_embed = test_embed[indicies, :]
+            label_t_0 = diffusion_model.reverse_ddim(images, stochastic=False, fp_x=fp_embed).detach()
+            correct = cnt_agree(label_t_0.detach(), target)[0].item()
             correct_cnt += correct
 
     acc = 100 * correct_cnt / test_embed.shape[0]
@@ -129,7 +127,7 @@ if __name__ == "__main__":
     if args.device is None:
         gpu_devices = ','.join([str(id) for id in args.gpu_devices])
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_devices
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = 'cuda' if jittor.has_cuda else 'cpu'
     else:
         device = args.device
 
@@ -145,11 +143,11 @@ if __name__ == "__main__":
 
     # create dataset and loader
     train_dataset = Food101N(data_path=data_dir, split='train')
-    labels = torch.tensor(train_dataset.targets)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
-                                              worker_init_fn=init_fn, drop_last=True)
+    labels = jittor.array(train_dataset.targets)
+    train_loader = data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                                  drop_last=True)
     test_dataset = Food101N(data_path=data_dir, split='test')
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=num_workers)
+    test_loader = data.DataLoader(test_dataset, batch_size=512, shuffle=False, num_workers=num_workers)
 
     # initialize diffusion model
     fp_encoder = clip_img_wrap('ViT-L/14', device, center=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
@@ -159,20 +157,19 @@ if __name__ == "__main__":
                                 feature_dim=args.feature_dim, encoder_type=args.diff_encoder,
                                 ddim_num_steps=args.ddim_n_step)
     # # load trained checkpoint to do test.
-    state_dict = torch.load(model_path, map_location=torch.device(device))
-    diffusion_model.load_diffusion_net(state_dict)
+    # state_dict = jittor.load(model_path)
+    # diffusion_model.load_diffusion_net(state_dict)
     diffusion_model.fp_encoder.eval()
 
     # DataParallel wrapper
     if args.device is None:
         print('using DataParallel')
-        diffusion_model.model = nn.DataParallel(diffusion_model.model).to(device)
-        diffusion_model.diffusion_encoder = nn.DataParallel(diffusion_model.diffusion_encoder).to(device)
-        diffusion_model.fp_encoder = nn.DataParallel(diffusion_model.fp_encoder).to(device)
-        fp_encoder = nn.DataParallel(fp_encoder).to(device)
+        diffusion_model.model = nn.DataParallel(diffusion_model.model)
+        diffusion_model.diffusion_encoder = nn.DataParallel(diffusion_model.diffusion_encoder)
+        diffusion_model.fp_encoder = nn.DataParallel(diffusion_model.fp_encoder)
+        fp_encoder = nn.DataParallel(fp_encoder)
     else:
         print('using single gpu')
-        diffusion_model.to(device)
 
     # pre-compute for fp embeddings on training data
     print('pre-computing fp embeddings for training data')
