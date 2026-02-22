@@ -1,13 +1,13 @@
 import os
 import clip
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
 from PIL import Image
-import torchvision.transforms as transforms
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+import jittor.transform as transforms
+from jittor.transform import Compose, Resize, CenterCrop, ToTensor
 import numpy as np
 try:
-    from torchvision.transforms import InterpolationMode
+    from jittor.transform import InterpolationMode
     BICUBIC = InterpolationMode.BICUBIC
 except ImportError:
     BICUBIC = Image.BICUBIC
@@ -15,12 +15,12 @@ except ImportError:
 
 def _transform(n_px, center=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010)):
     return Compose([
-        Normalize(mean=[-center[0] / std[0], -center[1] / std[1], -center[2] / std[2]],
+        transforms.ImageNormalize(mean=[-center[0] / std[0], -center[1] / std[1], -center[2] / std[2]],
                   std=[1 / std[0], 1 / std[1], 1 / std[2]]),
         Resize(n_px, interpolation=BICUBIC),
         CenterCrop(n_px),
         # ToTensor(),
-        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+        transforms.ImageNormalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
     ])
 
 
@@ -37,7 +37,7 @@ class clip_img_wrap(nn.Module):
     def forward(self, image):
 
         image = self.inv_normalize(image)
-        with torch.no_grad():
+        with jt.no_grad():
             image_features = self.model.encode_image(image)
 
         return image_features.float()
@@ -69,7 +69,7 @@ class clip_img_adapter(nn.Module):
 
     def forward(self, image):
 
-        with torch.no_grad():
+        with jt.no_grad():
             feature = self.clip_encoder(image)
             feature = self.adapter(feature)
 
