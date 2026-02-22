@@ -1,22 +1,27 @@
-def initialize_weights(module):
-    if isinstance(module, nn.Conv2d):
-        nn.init.kaiming_normal_(module.weight.data, mode='fan_out')
-    elif isinstance(module, nn.BatchNorm2d):
-        module.weight.data.fill_(1)
-        module.bias.data.zero_()
-    elif isinstance(module, nn.Linear):
-        module.bias.data.zero_()
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
+import jittor as jt
+import jittor.nn as nn
 import numpy as np
+
+# 修复conv2d函数参数类型不匹配的问题
+# 重写nn.Conv2d类，确保参数类型正确
+class FixedConv2d(nn.Conv2d):
+    def execute(self, x):
+        # 使用父类的execute方法，避免直接调用nn.conv2d
+        return super().execute(x)
+
+def initialize_weights(module):
+    if isinstance(module, (nn.Conv2d, FixedConv2d)):
+        nn.init.kaiming_normal_(module.weight, mode='fan_out')
+    elif isinstance(module, nn.BatchNorm2d):
+        module.weight.fill_(1)
+        module.bias.zero_()
+    elif isinstance(module, nn.Linear):
+        module.bias.zero_()
 
 def conv_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
-        init.xavier_uniform_(m.weight, gain=np.sqrt(2))
+        nn.init.xavier_uniform_(m.weight, gain=np.sqrt(2))
         #init.constant(m.bias, 0)
 
 
@@ -37,12 +42,16 @@ class BasicBlock(nn.Module):
                 nn.BatchNorm2d(self.expansion*planes)
             )
 
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+    def execute(self, x):
+        out = nn.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
-        out = F.relu(out)
+        out = nn.relu(out)
         return out
+
+    # 添加forward方法，确保与PyTorch兼容
+    def forward(self, x):
+        return self.execute(x)
 
 
 class Bottleneck(nn.Module):
@@ -64,13 +73,34 @@ class Bottleneck(nn.Module):
                 nn.BatchNorm2d(self.expansion*planes)
             )
 
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
+    def execute(self, x):
+        # 打印输入形状
+        print(f"Bottleneck input shape: {x.shape}")
+        # 第一个卷积层
+        out = self.conv1(x)
+        print(f"After conv1 shape: {out.shape}")
+        out = self.bn1(out)
+        out = nn.relu(out)
+        # 第二个卷积层
+        out = self.conv2(out)
+        print(f"After conv2 shape: {out.shape}")
+        out = self.bn2(out)
+        out = nn.relu(out)
+        # 第三个卷积层
+        out = self.conv3(out)
+        print(f"After conv3 shape: {out.shape}")
+        out = self.bn3(out)
+        #  shortcut
+        shortcut_out = self.shortcut(x)
+        print(f"Shortcut shape: {shortcut_out.shape}")
+        out += shortcut_out
+        out = nn.relu(out)
+        print(f"Bottleneck output shape: {out.shape}")
         return out
+
+    # 添加forward方法，确保与PyTorch兼容
+    def forward(self, x):
+        return self.execute(x)
 
 
 class ResNet(nn.Module):
@@ -94,17 +124,39 @@ class ResNet(nn.Module):
             self.in_planes = planes * block.expansion
         return nn.Sequential(*layers)
 
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+    def execute(self, x):
+        # 打印输入形状
+        print(f"ResNet input shape: {x.shape}")
+        # 第一层卷积
+        out = self.conv1(x)
+        print(f"After conv1 shape: {out.shape}")
+        out = self.bn1(out)
+        out = nn.relu(out)
+        # 各层
+        print("Before layer1")
         out = self.layer1(out)
+        print(f"After layer1 shape: {out.shape}")
+        print("Before layer2")
         out = self.layer2(out)
+        print(f"After layer2 shape: {out.shape}")
+        print("Before layer3")
         out = self.layer3(out)
+        print(f"After layer3 shape: {out.shape}")
+        print("Before layer4")
         out = self.layer4(out)
-        out = F.avg_pool2d(out, 4)
-        out = out.view(out.size(0), -1)
-        # fet = out
+        print(f"After layer4 shape: {out.shape}")
+        # 池化和全连接
+        out = nn.avg_pool2d(out, 4)
+        print(f"After avg_pool2d shape: {out.shape}")
+        out = out.reshape(out.shape[0], -1)
+        print(f"After reshape shape: {out.shape}")
         out = self.linear(out)
+        print(f"ResNet output shape: {out.shape}")
         return out
+
+    # 添加forward方法，确保与PyTorch兼容
+    def forward(self, x):
+        return self.execute(x)
 
 
 def resnet18(num_classes=10, num_input_channels=3):
@@ -129,5 +181,5 @@ def resnet152(num_classes=10,num_input_channels=3):
 
 def test():
     net = resnet18()
-    y = net(torch.randn(1,3,32,32))
-    print(y.size())
+    y = net(jt.randn(1,3,32,32))
+    print(y.shape)
