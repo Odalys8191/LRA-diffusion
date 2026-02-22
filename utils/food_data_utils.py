@@ -1,10 +1,10 @@
-import torch
-from torch.utils.data.dataset import Dataset
+import jittor as jt
+from jittor.dataset import Dataset
 import numpy as np
 import os
 from PIL import Image
 import PIL
-import torchvision.transforms as transforms
+import jittor.transform as transforms
 
 
 # https://github.com/kuangliu/pytorch-retinanet/blob/master/transform.py
@@ -46,7 +46,7 @@ class Food101N(Dataset):
                 transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.ImageNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
         else:
             self.image_list = np.load(os.path.join(data_path, 'test_images.npy'))
@@ -54,7 +54,7 @@ class Food101N(Dataset):
             self.transform = transforms.Compose([
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.ImageNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
 
         self.targets = self.targets - 1  # make sure the label is in the range [0, num_class - 1]
@@ -71,7 +71,7 @@ class Food101N(Dataset):
         label = self.targets[index]
         label = np.array(label).astype(np.int64)
 
-        return image, torch.from_numpy(label), index
+        return image, jt.array(label), index
 
     def __len__(self):
         return len(self.targets)
