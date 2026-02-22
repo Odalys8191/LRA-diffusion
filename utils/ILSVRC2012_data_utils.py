@@ -1,102 +1,78 @@
 import os
-import random
-import torch
-import torch.utils.data as data
-import numpy as np
+import clip
+import jittor as jt
+import jittor.nn as nn
 from PIL import Image
-import PIL
-import torchvision.transforms as transforms
-import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
-from tqdm import tqdm
-
-def resize(img, size, max_size=1000):
-    '''Resize the input PIL image to the given size.
-    Args:
-      img: (PIL.Image) image to be resized.
-      size: (tuple or int)
-        - if is tuple, resize image to the size.
-        - if is int, resize the shorter side to the size while maintaining the aspect ratio.
-      max_size: (int) when size is int, limit the image longer size to max_size.
-                This is essential to limit the usage of GPU memory.
-    Returns:
-      img: (PIL.Image) resized image.
-    '''
-    w, h = img.size
-    if isinstance(size, int):
-        size_min = min(w, h)
-        sw = sh = float(size) / size_min
-
-        ow = int(w * sw + 0.5)
-        oh = int(h * sh + 0.5)
-    else:
-        ow, oh = size
-        # sw = float(ow) / w
-        # sh = float(oh) / h
-    return img.resize((ow, oh), Image.BICUBIC)
+import jittor.transform as transforms
+from jittor.transform import Compose, Resize, CenterCrop, ToTensor
+import numpy as np
+try:
+    from jittor.transform import InterpolationMode
+    BICUBIC = InterpolationMode.BICUBIC
+except ImportError:
+    BICUBIC = Image.BICUBIC
 
 
-class ILSVRC2012(data.Dataset):
-    def __init__(self, data_root=None):
-        self.data_root = data_root
-
-        self.transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ])
-
-        file_path = os.path.join(self.data_root, 'ILSVRC2012_val_label.txt')
-        with open(file_path) as fid:
-            list_val = np.array([line.strip().split(' ') for line in fid.readlines() if int(line.strip().split(' ')[1]) < 50])
-
-        self.image_list = ['ILSVRC2012_img_val/' + x for x in list_val[:, 0]]
-        self.targets = [int(x) for x in list(list_val[:, 1])]
-
-    def __getitem__(self, index):
-
-        label = self.targets[index]
-        label = np.array(label).astype(np.int64)
-
-        image_file_name = self.image_list[index]
-        image_path = os.path.join(self.data_root, image_file_name)
-
-        image = Image.open(image_path)
-        # image = resize(image, 256)
-
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-
-        if self.transform is not None:
-            image = self.transform(image)
-        if image.size(0) == 1:
-            image = image.repeat(3, 1, 1)
-        return image, torch.from_numpy(label), index
-
-    def __len__(self):
-        return len(self.targets)
-
-    def update_corrupted_label(self, noise_label):
-        self.targets[:] = noise_label[:]
+def _transform(n_px, center=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010)):
+    return Compose([
+        transforms.ImageNormalize(mean=[-center[0] / std[0], -center[1] / std[1], -center[2] / std[2]],
+                  std=[1 / std[0], 1 / std[1], 1 / std[2]]),
+        Resize(n_px, interpolation=BICUBIC),
+        CenterCrop(n_px),
+        # ToTensor(),
+        transforms.ImageNormalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+    ])
 
 
+class clip_img_wrap(nn.Module):
+    def __init__(self, clip_model='ViT-L/14', device='cpu', center=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010)):
+        super().__init__()
 
-if __name__ == '__main__':
+        self.model, self.preprocess = clip.load(clip_model, device)
+        self.name = '-'.join(clip_model.split('/'))
+        self.device = device
+        self.dim = self.model.text_projection.shape[1]
+        self.inv_normalize = _transform(self.model.visual.input_resolution, center, std)
+
+    def forward(self, image):
+
+        image = self.inv_normalize(image)
+        with jt.no_grad():
+            image_features = self.model.encode_image(image)
+
+        return image_features.float()
+
+class Adapter(nn.Module):
+    def __init__(self, dim):
+        super(Adapter, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.Softplus(),
+            nn.Linear(dim, dim),
+            nn.Softplus(),
+        )
+    def forward(self, x):
+        x = self.fc(x)
+        return x
+
+class clip_img_adapter(nn.Module):
+    def __init__(self, device='cuda'):
+        super().__init__()
+
+        self.clip_encoder = clip_img_wrap(clip_model='ViT-L/14', device=device)
+        self.adapter = Adapter(dim=768)
+        self.device = device
+        self.clip_encoder.to(device)
+        self.clip_encoder.eval()
+        self.adapter.to(device)
+        self.adapter.eval()
+
+    def forward(self, image):
+
+        with jt.no_grad():
+            feature = self.clip_encoder(image)
+            feature = self.adapter(feature)
+
+        return feature
 
 
-    data_dir = './ILSVRC2012/'
-    train_dataset = ILSVRC2012(data_root=data_dir)
-    labels = train_dataset.targets
-    print(len(labels))
-
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=10, shuffle=True,
-                                               num_workers=4, drop_last=True)
-
-    with tqdm(enumerate(train_loader), total=len(train_loader), desc='train diffusion',
-              ncols=120) as pbar:
-        for i, (x_batch, y_batch, data_indices) in pbar:
-            print(x_batch)
-            print(y_batch)
-
-            break
