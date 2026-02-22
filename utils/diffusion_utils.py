@@ -1,29 +1,29 @@
 import math
-import torch
+import jittor as jt
 import numpy as np
 from tqdm import tqdm
 
 def make_beta_schedule(schedule="linear", num_timesteps=1000, start=1e-5, end=1e-2):
     if schedule == "linear":
-        betas = torch.linspace(start, end, num_timesteps)
+        betas = jt.linspace(start, end, num_timesteps)
     elif schedule == "const":
-        betas = end * torch.ones(num_timesteps)
+        betas = end * jt.ones(num_timesteps)
     elif schedule == "quad":
-        betas = torch.linspace(start ** 0.5, end ** 0.5, num_timesteps) ** 2
+        betas = jt.linspace(start ** 0.5, end ** 0.5, num_timesteps) ** 2
     elif schedule == "jsd":
-        betas = 1.0 / torch.linspace(num_timesteps, 1, num_timesteps)
+        betas = 1.0 / jt.linspace(num_timesteps, 1, num_timesteps)
     elif schedule == "sigmoid":
-        betas = torch.linspace(-6, 6, num_timesteps)
-        betas = torch.sigmoid(betas) * (end - start) + start
+        betas = jt.linspace(-6, 6, num_timesteps)
+        betas = jt.sigmoid(betas) * (end - start) + start
     elif schedule == "cosine" or schedule == "cosine_reverse":
         max_beta = 0.999
         cosine_s = 0.008
-        betas = torch.tensor(
+        betas = jt.array(
             [min(1 - (math.cos(((i + 1) / num_timesteps + cosine_s) / (1 + cosine_s) * math.pi / 2) ** 2) / (
                     math.cos((i / num_timesteps + cosine_s) / (1 + cosine_s) * math.pi / 2) ** 2), max_beta) for i in
              range(num_timesteps)])
     elif schedule == "cosine_anneal":
-        betas = torch.tensor(
+        betas = jt.array(
             [start + 0.5 * (end - start) * (1 - math.cos(t / (num_timesteps - 1) * math.pi)) for t in
              range(num_timesteps)])
     return betas
@@ -31,7 +31,7 @@ def make_beta_schedule(schedule="linear", num_timesteps=1000, start=1e-5, end=1e
 
 def extract(input, t, x):
     shape = x.shape
-    out = torch.gather(input, 0, t.to(input.device))
+    out = jt.gather(input, 0, t)
     reshape = [t.shape[0]] + [1] * (len(shape) - 1)
     return out.reshape(*reshape)
 
@@ -40,7 +40,7 @@ def extract(input, t, x):
 def q_sample(y, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, t, noise=None, fq_x=None):
 
     if noise is None:
-        noise = torch.randn_like(y).to(y.device)
+        noise = jt.randn_like(y)
     sqrt_alpha_bar_t = extract(alphas_bar_sqrt, t, y)
     sqrt_one_minus_alpha_bar_t = extract(one_minus_alphas_bar_sqrt, t, y)
     # q(y_t | y_0, x)
@@ -59,9 +59,8 @@ def p_sample(model, x, y_t, fp_x, t, alphas, one_minus_alphas_bar_sqrt, stochast
     fp_x: embedding of fp encoder.
     fq_x: embedding of fq encoder.
     """
-    device = next(model.parameters()).device
-    z = stochastic * torch.randn_like(y_t)
-    t = torch.tensor([t]).to(device)
+    z = stochastic * jt.randn_like(y_t)
+    t = jt.array([t])
     alpha_t = extract(alphas, t, y_t)
     sqrt_one_minus_alpha_bar_t = extract(one_minus_alphas_bar_sqrt, t, y_t)
     sqrt_one_minus_alpha_bar_t_m_1 = extract(one_minus_alphas_bar_sqrt, t - 1, y_t)
@@ -71,14 +70,14 @@ def p_sample(model, x, y_t, fp_x, t, alphas, one_minus_alphas_bar_sqrt, stochast
     gamma_0 = (1 - alpha_t) * sqrt_alpha_bar_t_m_1 / (sqrt_one_minus_alpha_bar_t.square())
     gamma_1 = (sqrt_one_minus_alpha_bar_t_m_1.square()) * (alpha_t.sqrt()) / (sqrt_one_minus_alpha_bar_t.square())
 
-    eps_theta = model(x, y_t, t, fp_x).to(device).detach()
+    eps_theta = model(x, y_t, t, fp_x).detach()
     # y_0 reparameterization
     if fq_x is None:
         y_0_reparam = 1 / sqrt_alpha_bar_t * (
-                y_t - eps_theta * sqrt_one_minus_alpha_bar_t).to(device)
+                y_t - eps_theta * sqrt_one_minus_alpha_bar_t)
     else:
         y_0_reparam = 1 / sqrt_alpha_bar_t * (
-                y_t - (1 - sqrt_alpha_bar_t) * fq_x - eps_theta * sqrt_one_minus_alpha_bar_t).to(device)
+                y_t - (1 - sqrt_alpha_bar_t) * fq_x - eps_theta * sqrt_one_minus_alpha_bar_t)
 
     # posterior mean
     if fq_x is None:
@@ -90,45 +89,43 @@ def p_sample(model, x, y_t, fp_x, t, alphas, one_minus_alphas_bar_sqrt, stochast
 
     # posterior variance
     beta_t_hat = (sqrt_one_minus_alpha_bar_t_m_1.square()) / (sqrt_one_minus_alpha_bar_t.square()) * (1 - alpha_t)
-    y_t_m_1 = y_t_m_1_hat.to(device) + beta_t_hat.sqrt().to(device) * z.to(device)
+    y_t_m_1 = y_t_m_1_hat + beta_t_hat.sqrt() * z
     return y_t_m_1
 
 
 # Reverse function -- sample y_0 given y_1
 def p_sample_t_1to0(model, x, y_t, fp_x, one_minus_alphas_bar_sqrt, fq_x=None):
-    device = next(model.parameters()).device
-    t = torch.tensor([0]).to(device)  # corresponding to timestep 1 (i.e., t=1 in diffusion models)
+    t = jt.array([0])  # corresponding to timestep 1 (i.e., t=1 in diffusion models)
     sqrt_one_minus_alpha_bar_t = extract(one_minus_alphas_bar_sqrt, t, y_t)
     sqrt_alpha_bar_t = (1 - sqrt_one_minus_alpha_bar_t.square()).sqrt()
-    eps_theta = model(x, y_t, t, fp_x).to(device).detach()
+    eps_theta = model(x, y_t, t, fp_x).detach()
     # y_0 reparameterization
     if fq_x is None:
         y_0_reparam = 1 / sqrt_alpha_bar_t * (
-                y_t - eps_theta * sqrt_one_minus_alpha_bar_t).to(device)
+                y_t - eps_theta * sqrt_one_minus_alpha_bar_t)
     else:
         y_0_reparam = 1 / sqrt_alpha_bar_t * (
-                y_t - (1 - sqrt_alpha_bar_t) * fq_x - eps_theta * sqrt_one_minus_alpha_bar_t).to(device)
+                y_t - (1 - sqrt_alpha_bar_t) * fq_x - eps_theta * sqrt_one_minus_alpha_bar_t)
 
-    y_t_m_1 = y_0_reparam.to(device)
+    y_t_m_1 = y_0_reparam
     return y_t_m_1
 
 
 def p_sample_loop(model, x, fp_x, n_steps, alphas, one_minus_alphas_bar_sqrt,
                   only_last_sample=True, stochastic=True, fq_x=None):
     num_t, y_p_seq = None, None
-    device = next(model.parameters()).device
     batch_size = x.shape[0]
 
     if fq_x is None:
-        y_t = stochastic * torch.randn_like(torch.zeros([batch_size, model.y_dim])).to(device)
+        y_t = stochastic * jt.randn([batch_size, model.y_dim])
     else:
-        y_t = stochastic * torch.randn_like(torch.zeros([batch_size, model.y_dim])).to(device) + fq_x
+        y_t = stochastic * jt.randn([batch_size, model.y_dim]) + fq_x
 
     if only_last_sample:
         num_t = 1
     else:
         # y_p_seq = [y_t]
-        y_p_seq = torch.zeros([y_t.shape[0], y_t.shape[1], n_steps+1]).to(device)
+        y_p_seq = jt.zeros([y_t.shape[0], y_t.shape[1], n_steps+1])
         y_p_seq[:, :, n_steps] = y_t
     for t in reversed(range(1, n_steps)):
         y_t = y_t
@@ -169,11 +166,10 @@ def make_ddim_timesteps(ddim_discr_method, num_ddim_timesteps, num_ddpm_timestep
 
 def make_ddim_sampling_parameters(alphacums, ddim_timesteps, eta):
     # select alphas for computing the variance schedule
-    device = alphacums.device
     alphas = alphacums[ddim_timesteps]
-    alphas_prev = torch.tensor([alphacums[0]] + alphacums[ddim_timesteps[:-1]].tolist()).to(device)
+    alphas_prev = jt.array([alphacums[0].item()] + alphacums[ddim_timesteps[:-1]].tolist())
 
-    sigmas = eta * torch.sqrt((1 - alphas_prev) / (1 - alphas) * (1 - alphas / alphas_prev))
+    sigmas = eta * jt.sqrt((1 - alphas_prev) / (1 - alphas) * (1 - alphas / alphas_prev))
     # print(f'Selected alphas for ddim sampler: a_t: {alphas}; a_(t-1): {alphas_prev}')
     # print(f'For the chosen value of eta, which is {eta}, '
     #       f'this results in the following sigma_t schedule for ddim sampler {sigmas}')
@@ -181,13 +177,12 @@ def make_ddim_sampling_parameters(alphacums, ddim_timesteps, eta):
 
 
 def ddim_sample_loop(model, x_embed, fp_x, timesteps, y_dim, ddim_alphas, ddim_alphas_prev, ddim_sigmas, stochastic=True, fq_x=None):
-    device = next(model.parameters()).device
     batch_size = x_embed.shape[0]
 
     if fq_x is None:
-        y_t = stochastic * torch.randn_like(torch.zeros([batch_size, y_dim])).to(device)
+        y_t = stochastic * jt.randn([batch_size, y_dim])
     else:
-        y_t = stochastic * torch.randn_like(torch.zeros([batch_size, y_dim])).to(device) + fq_x
+        y_t = stochastic * jt.randn([batch_size, y_dim]) + fq_x
 
     # intermediates = {'y_inter': [y_t], 'pred_y0': [y_t]}
     time_range = np.flip(timesteps)
@@ -196,7 +191,7 @@ def ddim_sample_loop(model, x_embed, fp_x, timesteps, y_dim, ddim_alphas, ddim_a
 
     for i, step in enumerate(time_range):
         index = total_steps - i - 1
-        t = torch.full((batch_size,), step, device=device, dtype=torch.long)
+        t = jt.full((batch_size,), step, dtype=jt.int64)
 
         y_t, pred_y0 = ddim_sample_step(model, x_embed, y_t, fp_x, t, index, ddim_alphas,
                                         ddim_alphas_prev, ddim_sigmas, fq_x=fq_x)
@@ -209,19 +204,18 @@ def ddim_sample_loop(model, x_embed, fp_x, timesteps, y_dim, ddim_alphas, ddim_a
 
 def ddim_sample_step(model, x_embed, y_t, fp_x, t, index, ddim_alphas, ddim_alphas_prev, ddim_sigmas, fq_x=None):
     batch_size = x_embed.shape[0]
-    device = next(model.parameters()).device
-    e_t = model(x_embed, y_t, t, fp_x).to(device).detach()
+    e_t = model(x_embed, y_t, t, fp_x).detach()
 
-    sqrt_one_minus_alphas = torch.sqrt(1. - ddim_alphas)
+    sqrt_one_minus_alphas = jt.sqrt(1. - ddim_alphas)
     # select parameters corresponding to the currently considered timestep
-    a_t = torch.full([batch_size, 1], ddim_alphas[index], device=device)
-    a_t_m_1 = torch.full([batch_size, 1], ddim_alphas_prev[index], device=device)
-    sigma_t = torch.full([batch_size, 1], ddim_sigmas[index], device=device)
-    sqrt_one_minus_at = torch.full([batch_size, 1], sqrt_one_minus_alphas[index], device=device)
+    a_t = jt.full([batch_size, 1], ddim_alphas[index])
+    a_t_m_1 = jt.full([batch_size, 1], ddim_alphas_prev[index])
+    sigma_t = jt.full([batch_size, 1], ddim_sigmas[index])
+    sqrt_one_minus_at = jt.full([batch_size, 1], sqrt_one_minus_alphas[index])
 
     # direction pointing to x_t
     dir_y_t = (1. - a_t_m_1 - sigma_t ** 2).sqrt() * e_t
-    noise = sigma_t * torch.randn_like(y_t).to(device)
+    noise = sigma_t * jt.randn_like(y_t)
 
     # reparameterize x_0
     if fq_x is None:
