@@ -1,4 +1,4 @@
-import torch.nn as nn
+import jittor.nn as nn
 
 class EMA(object):
     def __init__(self, mu=0.999):
@@ -18,10 +18,12 @@ class EMA(object):
     def ema(self, module):
         for name, param in module.named_parameters():
             if param.requires_grad:
-                param.data.copy_(self.shadow[name].data)
+                param.data = self.shadow[name].data.clone()
 
     def ema_copy(self, module):
-        module_copy = type(module)(module.config).to(module.config.device)
+        # Jittor版本的ema_copy实现
+        # 注意：这里假设module有state_dict方法
+        module_copy = type(module)()
         module_copy.load_state_dict(module.state_dict())
         self.ema(module_copy)
         return module_copy
