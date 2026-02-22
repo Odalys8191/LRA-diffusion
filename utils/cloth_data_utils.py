@@ -1,14 +1,14 @@
 import os
 import random
-import torch
-import torch.utils.data as data
+import jittor as jt
+from jittor.dataset import Dataset
 import numpy as np
 from PIL import Image
 import PIL
-import torchvision.transforms as transforms
+import jittor.transform as transforms
 
 
-class Clothing1M(data.Dataset):
+class Clothing1M(Dataset):
     def __init__(self, data_root=None, split='CC', balance=False, cls_size=5000, randomize=False, transform='test'):
         self.data_root = data_root
 
@@ -17,7 +17,7 @@ class Clothing1M(data.Dataset):
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize((0.6959, 0.6537, 0.6371), (0.3113, 0.3192, 0.3214)),
+                transforms.ImageNormalize((0.6959, 0.6537, 0.6371), (0.3113, 0.3192, 0.3214)),
             ])
         elif transform == 'train':
             self.transform = transforms.Compose([
@@ -25,7 +25,7 @@ class Clothing1M(data.Dataset):
                 transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize((0.6959, 0.6537, 0.6371), (0.3113, 0.3192, 0.3214)),
+                transforms.ImageNormalize((0.6959, 0.6537, 0.6371), (0.3113, 0.3192, 0.3214)),
             ])
         else:
             raise Exception('transform need to be train or test')
@@ -64,7 +64,7 @@ class Clothing1M(data.Dataset):
             self.label_list = label_list
         else:
             self.image_list = np.array(image_list)
-            self.label_list = torch.tensor(label_list)
+            self.label_list = jt.array(label_list)
 
             l = np.array(self.label_list)
             x = np.unique(l)
@@ -103,9 +103,9 @@ class Clothing1M(data.Dataset):
 
         if self.transform is not None:
             image = self.transform(image)
-        if image.size(0) == 1:
+        if image.shape[0] == 1:
             image = image.repeat(3, 1, 1)
-        return image, torch.from_numpy(label), index
+        return image, jt.array(label), index
 
     def __len__(self):
         return len(self.label_list)
