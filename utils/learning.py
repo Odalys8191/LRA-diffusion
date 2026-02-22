@@ -1,18 +1,15 @@
 import random
 import math
 import numpy as np
-import torch
-from torch import nn
+import jittor as jt
+import jittor.nn as nn
 import os
-import torch.utils.data as data
 from tqdm import tqdm
 
 
 def set_random_seed(seed):
     print(f"\n* Set seed {seed}")
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)  # torch.cuda.manual_seed(seed)
+    jt.set_seed(seed)
     random.seed(seed)
     np.random.seed(seed)
 
@@ -35,11 +32,11 @@ def cast_label_to_one_hot_and_prototype(y_labels_batch, n_class, return_prototyp
     """
     y_labels_batch: a vector of length batch_size.
     """
-    y_one_hot_batch = nn.functional.one_hot(y_labels_batch, num_classes=n_class).float()
+    y_one_hot_batch = nn.one_hot(y_labels_batch, num_classes=n_class).float32()
     if return_prototype:
         label_min, label_max = [0.001, 0.999]
-        y_logits_batch = torch.logit(nn.functional.normalize(
-            torch.clip(y_one_hot_batch, min=label_min, max=label_max), p=1.0, dim=1))
+        y_logits_batch = jt.logit(nn.normalize(
+            jt.clamp(y_one_hot_batch, min=label_min, max=label_max), p=1.0, dim=1))
         return y_one_hot_batch, y_logits_batch
     else:
         return y_one_hot_batch
@@ -54,37 +51,38 @@ def prepare_fp_x(fp_encoder, dataset, save_dir=None, device='cpu', fp_dim=768, b
 
     if save_dir is not None:
         if os.path.exists(save_dir):
-            fp_embed_all = torch.tensor(np.load(save_dir))
+            fp_embed_all = jt.array(np.load(save_dir))
             print(f'Embeddings were computed before, loaded from: {save_dir}')
-            return fp_embed_all.cpu()
+            return fp_embed_all
 
-    with torch.no_grad():
-        data_loader = data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=16)
-        fp_embed_all = torch.zeros([len(dataset), fp_dim]).to(device)
+    with jt.no_grad():
+        # 使用Jittor的DataLoader
+        data_loader = dataset.set_attrs(batch_size=batch_size, shuffle=False, num_workers=4)
+        fp_embed_all = jt.zeros([len(dataset), fp_dim])
         with tqdm(enumerate(data_loader), total=len(data_loader), desc=f'Computing embeddings fp(x)',
                   ncols=100) as pbar:
             for i, data_batch in pbar:
                 [x_batch, _, data_indecies] = data_batch[:3]
-                temp = fp_encoder(x_batch.to(device))
+                temp = fp_encoder(x_batch)
                 fp_embed_all[data_indecies, :] = temp
 
         if save_dir is not None:
-            np.save(save_dir, fp_embed_all.cpu())
+            np.save(save_dir, fp_embed_all.numpy())
 
-    return fp_embed_all.cpu()
+    return fp_embed_all
 
 
 def cnt_agree(output, target, topk=(1,)):
     """
     Computes the accuracy over the k top predictions for the specified values of k.
     """
-    maxk = min(max(topk), output.size()[1])
+    maxk = min(max(topk), output.shape[1])
 
-    output = torch.softmax(-(output - 1)**2,  dim=-1)
+    output = nn.softmax(-(output - 1)**2,  dim=-1)
     _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
+    pred = pred.transpose(0, 1)
+    correct = pred.equal(target.reshape(1, -1).expand_as(pred))
 
-    return torch.sum(correct).item()
+    return jt.sum(correct).item()
 
 
