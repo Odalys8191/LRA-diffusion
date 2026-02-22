@@ -1,13 +1,11 @@
 import os
 import random
-import torch
-import torch.utils.data as data
+import jittor as jt
+from jittor.dataset import Dataset
 import numpy as np
 from PIL import Image
 import PIL
-import torchvision.transforms as transforms
-import torch.multiprocessing
-torch.multiprocessing.set_sharing_strategy('file_system')
+import jittor.transform as transforms
 from tqdm import tqdm
 
 
@@ -37,7 +35,7 @@ def resize(img, size, max_size=1000):
     return img.resize((ow, oh), Image.BICUBIC)
 
 
-class WebVision(data.Dataset):
+class WebVision(Dataset):
     def __init__(self, data_root=None, split='train', balance=False, cls_size=500, randomize=False, transform='val'):
         self.data_root = data_root
 
@@ -45,14 +43,14 @@ class WebVision(data.Dataset):
             self.transform = transforms.Compose([
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.ImageNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
         elif transform == 'train':
             self.transform = transforms.Compose([
                 transforms.RandomCrop(224),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                transforms.ImageNormalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ])
         else:
             raise Exception('transform need to be train or val')
@@ -98,7 +96,7 @@ class WebVision(data.Dataset):
                 print(f'sample not enough, use class size: {min_class_cnt}')
 
             self.image_list = np.array(image_list)
-            self.label_list = torch.tensor(label_list)
+            self.label_list = jt.array(label_list)
 
             res_img_list = []
             res_label_list = []
@@ -134,9 +132,9 @@ class WebVision(data.Dataset):
 
         if self.transform is not None:
             image = self.transform(image)
-        if image.size(0) == 1:
+        if image.shape[0] == 1:
             image = image.repeat(3, 1, 1)
-        return image, torch.from_numpy(label), index
+        return image, jt.array(label), index
 
     def __len__(self):
         return len(self.label_list)
@@ -155,8 +153,8 @@ if __name__ == '__main__':
     labels = train_dataset.targets
     print(len(labels))
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=10, shuffle=True,
-                                               num_workers=4, drop_last=True)
+    # Jittor使用自己的DataLoader
+    train_loader = train_dataset.set_attrs(batch_size=10, shuffle=True, num_workers=4, drop_last=True)
 
     with tqdm(enumerate(train_loader), total=len(train_loader), desc='train diffusion',
               ncols=120) as pbar:
