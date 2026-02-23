@@ -228,14 +228,11 @@ if __name__ == "__main__":
     if args.fp_encoder == 'SimCLR':
         fp_dim = 2048
         real_fp = True
-
-        print("Warning: Jittor version requires SimCLR model in compatible format")
-
-        fp_encoder = SimCLR_encoder(feature_dim=128)
+        state_dict = torch.load(f'./model/SimCLR_128_{dataset}.pt', map_location=torch.device(args.device))
+        fp_encoder = SimCLR_encoder(feature_dim=128).to(args.device)
+        fp_encoder.load_state_dict(state_dict, strict=False)
     elif args.fp_encoder == 'CLIP':
         real_fp = False
-  
-        print("Warning: Jittor version requires CLIP model compatible implementation")
         fp_encoder = clip_img_wrap(args.CLIP_type, args.device, center=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))
         fp_dim = fp_encoder.dim
     else:
